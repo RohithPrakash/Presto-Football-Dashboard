@@ -1,0 +1,52 @@
+[project]
+name = "presto-football-dashboard"
+version = "1.0.0"
+description = "A football dashboard for the Pimoroni Presto: next fixtures, live scores and club crests."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = ["presto", "pimoroni", "micropython", "football", "dashboard"]
+
+# The dashboard itself runs on the board under MicroPython and has no desktop
+# dependencies. Everything below is tooling: flashing the board, and running
+# the test suite on a laptop with the hardware stubbed out.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mpremote>=1.22",   # copies files to the board, resets it
+    "pillow>=10.0",     # reference decoder the badge tests compare against
+    "ruff>=0.6",        # linting, same rule set as Pimoroni's CI
+]
+
+[tool.uv]
+# There is no importable package here, the Python files are MicroPython
+# modules meant for the board, not for the host interpreter.
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+# Mirrors the Pimoroni Presto repository's CI configuration, so contributions
+# stay consistent with upstream examples.
+select = ["F", "Q", "W", "E", "B", "COM", "BLE", "C4", "ISC", "ICN", "PIE", "RSE", "RET", "SLF", "ARG"]
+ignore = [
+    "E501",     # line too long
+    "E402",     # module level import not at top of file
+    "COM812",   # trailing comma
+    "ICN001",   # import conventions
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The tests deliberately stub hardware modules (so stub signatures carry
+# arguments they ignore) and exercise the decoder's internal helpers.
+"tests/*" = [
+    "BLE001",   # broad except - the harness reports failures rather than raising
+    "ARG001",   # unused arguments in stub/fake functions
+    "ARG002",
+    "ARG005",   # unused arguments in stub lambdas
+    "SLF001",   # checking _crc32/_adler32 against zlib is the point
+    "E731",     # lambda assignment is fine for a one-line fake
+]

@@ -1,0 +1,12 @@
+Roboto-Medium.af
+-----------------
+Roboto-Medium.af is a PicoVector "Alright Fonts" conversion of Roboto Medium,
+taken from Pimoroni's Presto examples repository
+(https://github.com/pimoroni/presto, MIT licensed).
+
+Roboto itself is by Christian Robertson and is licensed under the Apache
+License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+
+The .af format carries only the 95 printable ASCII glyphs (0x20-0x7E), which
+is why football_scores.py folds accented club names down to ASCII before
+drawing them.

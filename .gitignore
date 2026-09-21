@@ -1,0 +1,14 @@
+# Your WiFi password and API token live here - never commit it.
+secrets.py
+
+# uv / virtualenv
+.venv/
+__pycache__/
+*.pyc
+
+# Crest corpus, fetched on demand by tests/fetch_badges.py
+tests/badges/
+
+# Preview output from tests/preview.py
+tests/layout.html
+layout.html
