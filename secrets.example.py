@@ -19,3 +19,9 @@ UTC_OFFSET = 0
 
 # Set to False for am/pm kick off times.
 USE_24_HOUR = True
+
+# The seven LEDs around the screen follow the match: team colours during a
+# game, the winner's colour afterwards, and a slow cycle of your clubs'
+# colours when there is no football on.
+LEDS_ENABLED = True
+LED_BRIGHTNESS = 1.0        # 0.0 to 1.0

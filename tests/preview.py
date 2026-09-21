@@ -128,10 +128,11 @@ class BadgeCache:
         if team_id not in self.dims:
             real = real_badges
             data = open("%s/%d.png" % (BADGE_DIR, team_id), "rb").read()
-            w, h, _ = real.decode_scaled(data, self.size, self.background)
+            w, h, _rgb, _pal = real.decode_scaled(data, self.size, self.background)
             self.dims[team_id] = (w, h)
         return self.dims[team_id]
 
+    def colours(self, team_id): return []
     def forget(self, team_id): pass
     def request(self, ids): pass
     def process_one(self): return False
@@ -262,7 +263,7 @@ def badge_data_uri(team_id):
         import base64
         real = real_badges
         data = open("%s/%d.png" % (BADGE_DIR, team_id), "rb").read()
-        w, h, px = real.decode_scaled(data, 36, fs.PANEL_RGB)
+        w, h, px, _pal = real.decode_scaled(data, 36, fs.PANEL_RGB)
         blob = real.encode_png(w, h, px)
         _badge_uris[team_id] = ("data:image/png;base64,"
                                 + base64.b64encode(blob).decode())

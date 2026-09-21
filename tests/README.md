@@ -21,6 +21,7 @@ uv run tests/test_badges.py
 | `test_api.py` | The football-data client and a full match lifecycle (upcoming → live → half time → full time → 24h hold → expiry) against mocked responses, plus error handling. |
 | `test_badges.py` | The PNG decoder compared against Pillow on real crests, every colour type and bit depth, malformed input, and the encoder round-tripping. |
 | `test_layout.py` | Screen geometry for all five states: nothing off-screen, overflowing, or overlapping. |
+| `test_leds.py` | The LED map against the driver's physical layout, the home/away split, winner-takes-all versus a draw, idle cycling, missing-crest fallback, and the fade state machine. |
 | `preview.py` | Renders each state to `layout.html` and to the SVGs in `docs/`. |
 | `fetch_badges.py` | Downloads the crest corpus into `tests/badges/` (gitignored). |
 

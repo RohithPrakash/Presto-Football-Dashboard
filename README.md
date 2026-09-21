@@ -23,6 +23,7 @@ held. Times are shown in your own timezone.
 - **Final score held for 24 hours** - after the whistle the result stays put,
   with the next four fixtures listed beneath it.
 - **Club crests**, downloaded and shrunk on the device.
+- **Ambient LEDs** that follow the football - see below.
 - **Several teams at once** - follow as many as you like; their fixtures are
   merged and sorted.
 
@@ -95,6 +96,8 @@ All of it lives in `secrets.py`:
 | `FAVOURITE_TEAMS` | Teams to follow. Numeric football-data ids, or names. |
 | `UTC_OFFSET` | Hours ahead of UTC, e.g. `5.5`, `-5`, `1`. |
 | `USE_24_HOUR` | `False` for am/pm kick off times. |
+| `LEDS_ENABLED` | `False` to leave the ambient LEDs alone. |
+| `LED_BRIGHTNESS` | `0.0` to `1.0`, default `1.0`. |
 
 **Team names are matched loosely** - `"Manchester City"`, `"Manchester City FC"`,
 `"Man City"` and `"MCI"` all find the same club, and accents are ignored so
@@ -106,7 +109,42 @@ competition listings, for example
 `https://api.football-data.org/v4/competitions/PL/teams`.
 
 Tuning knobs live at the top of `football_scores.py`: `SCHEDULE_REFRESH_S`,
-`MIN_LIVE_INTERVAL_S`, `BADGE_SIZE`, `RESULT_HOLD_S` and friends.
+`MIN_LIVE_INTERVAL_S`, `BADGE_SIZE`, `RESULT_HOLD_S`, `LED_IDLE_CYCLE_S`,
+`LED_FADE_S` and friends.
+
+## The LEDs
+
+Presto has seven LEDs around the edge of the screen, and the dashboard drives
+them from the colours in the club crests:
+
+| When | What the LEDs do |
+| --- | --- |
+| A match is on | Home side's colour down the left, away side's down the right, blended across the top |
+| After a match | The winner's colour all the way round, for as long as the result is held. A draw keeps the two-sided split |
+| No football on | The favourite clubs' colours, one every fifteen minutes |
+
+Every change fades down to black, swaps, and fades back up.
+
+The colours are sampled from each crest while it is being decoded for the
+screen, so nothing extra is downloaded. A crest is mostly outline and white
+space, so the commonest colour is rarely the interesting one - neighbouring
+shades are clustered together and then weighted by saturation, which pushes
+the club's actual colours to the front:
+
+| Club | Colours found |
+| --- | --- |
+| Manchester City | navy, sky blue, gold |
+| Borussia Dortmund | yellow, black |
+| AC Milan | black, red |
+| Real Madrid | gold, blue, red |
+
+It follows the crest rather than what a fan would name, so the odd club comes
+out unexpectedly. Liverpool leads with the teal from its crest, which really
+does cover slightly more of the artwork than the red does; the red is next in
+the cycle.
+
+Turn the whole thing off with `LEDS_ENABLED = False`, or tone it down with
+`LED_BRIGHTNESS` (0.0 to 1.0).
 
 ## Which competitions are covered
 

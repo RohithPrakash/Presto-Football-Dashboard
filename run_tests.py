@@ -19,6 +19,7 @@ SUITES = [
     ("test_api", "API client and match lifecycle"),
     ("test_badges", "PNG decoder, checked against Pillow"),
     ("test_layout", "screen geometry for every state"),
+    ("test_leds", "ambient LED states and fading"),
 ]
 
 

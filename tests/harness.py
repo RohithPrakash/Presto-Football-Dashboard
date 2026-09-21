@@ -53,6 +53,7 @@ class _BadgeCache:
 
     def buffer(self, team_id): return bytearray(b"\x89PNG fake")
     def size_of(self, team_id): return (self.size, self.size)
+    def colours(self, team_id): return []
     def forget(self, team_id): pass
     def request(self, wanted): self.requested.extend(wanted)
     def process_one(self): return False

@@ -137,10 +137,69 @@ def _read_chunks(data):
         pos += 12 + length          # length + type + data + crc
 
 
-def decode_scaled(data, box, background):
+def _saturation(r, g, b):
+    high = max(r, g, b)
+    if high == 0:
+        return 0.0
+    return (high - min(r, g, b)) / float(high)
+
+
+def _pick_palette(buckets, count):
+    """Choose a few colours that read as "the club's colours".
+
+    A crest is mostly outline and white space, so the commonest colour is
+    rarely the interesting one. Weighting by saturation pushes the accent
+    colour to the front while still letting a genuinely dominant black or
+    white through.
+    """
+    entries = []
+    for total, r_sum, g_sum, b_sum in buckets.values():
+        r = r_sum // total
+        g = g_sum // total
+        b = b_sum // total
+        # Ignore the near-white paper a lot of crests sit on.
+        if r > 235 and g > 235 and b > 235:
+            continue
+        entries.append([total, r, g, b])
+    if not entries:
+        return []
+
+    # Merge neighbouring buckets first. Shading and anti-aliasing spread one
+    # ink across several buckets, so scoring them separately would let a
+    # tightly grouped minor colour beat the club's actual primary.
+    entries.sort(key=lambda e: e[0], reverse=True)
+    clusters = []
+    for total, r, g, b in entries:
+        for cluster in clusters:
+            cr = cluster[1] // cluster[0]
+            cg = cluster[2] // cluster[0]
+            cb = cluster[3] // cluster[0]
+            if abs(r - cr) + abs(g - cg) + abs(b - cb) < 110:
+                cluster[0] += total
+                cluster[1] += r * total
+                cluster[2] += g * total
+                cluster[3] += b * total
+                break
+        else:
+            clusters.append([total, r * total, g * total, b * total])
+
+    scored = []
+    for total, r_sum, g_sum, b_sum in clusters:
+        r = r_sum // total
+        g = g_sum // total
+        b = b_sum // total
+        scored.append((total * (1.0 + 1.5 * _saturation(r, g, b)), r, g, b))
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    return [(r, g, b) for _score, r, g, b in scored[:count]]
+
+
+def decode_scaled(data, box, background, palette_size=3):
     """Decode a PNG and box-filter it down to fit `box`, over `background`.
 
-    Returns (width, height, RGB bytes), or raises ValueError.
+    Returns (width, height, RGB bytes, palette), where palette is a list of
+    up to `palette_size` (r, g, b) tuples describing the club's colours -
+    used to drive the LEDs. Raises ValueError on anything it cannot read.
     """
     width = height = 0
     depth = colour_type = interlace = 0
@@ -199,6 +258,13 @@ def decode_scaled(data, box, background):
     acc_a = [0] * cells
     acc_n = [0] * cells
 
+    # Colour histogram for the LEDs, gathered from the opaque source pixels
+    # as we go: a crest is decoded once, so this costs nothing extra beyond
+    # the counting itself. Keyed by RGB quantised to 4 bits per channel,
+    # holding [count, r total, g total, b total].
+    buckets = {}
+    sample_step = 1 + max(width, height) // 120   # ~100x100 samples at most
+
     stream = _inflate_stream(bytes(idat))
     prev = bytearray(stride)
     line = bytearray(stride)
@@ -243,6 +309,18 @@ def decode_scaled(data, box, background):
             acc_a[cell] += a
             acc_n[cell] += 1
 
+            # Only solid pixels say anything about the club's colours.
+            if a > 200 and (x % sample_step) == 0 and (y % sample_step) == 0:
+                key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
+                bucket = buckets.get(key)
+                if bucket is None:
+                    buckets[key] = [1, r, g, b]
+                else:
+                    bucket[0] += 1
+                    bucket[1] += r
+                    bucket[2] += g
+                    bucket[3] += b
+
         prev, line = line, prev
 
     bg_r, bg_g, bg_b = background
@@ -265,7 +343,7 @@ def decode_scaled(data, box, background):
         out[o + 1] = int(g * cover + bg_g * (1.0 - cover) + 0.5)
         out[o + 2] = int(b * cover + bg_b * (1.0 - cover) + 0.5)
 
-    return out_w, out_h, bytes(out)
+    return out_w, out_h, bytes(out), _pick_palette(buckets, palette_size)
 
 
 def _chunk(kind, payload):
@@ -321,6 +399,7 @@ class BadgeCache:
         self.log = log or _quiet
         self.limit = limit
         self.ready = {}          # team id -> (width, height, PNG bytes)
+        self.palettes = {}       # team id -> [(r, g, b), ...] for the LEDs
         self.order = []          # team ids, least recently used first
         self.failed = set()
         self.pending = []
@@ -344,6 +423,7 @@ class BadgeCache:
     def forget(self, team_id):
         """Drop a badge that would not draw, so we stop trying."""
         self.ready.pop(team_id, None)
+        self.palettes.pop(team_id, None)
         if team_id in self.order:
             self.order.remove(team_id)
         self.failed.add(team_id)
@@ -352,6 +432,7 @@ class BadgeCache:
         while len(self.order) > self.limit:
             oldest = self.order.pop(0)
             self.ready.pop(oldest, None)
+            self.palettes.pop(oldest, None)
 
     def request(self, wanted):
         """Queue any badges we do not have yet, as (team_id, crest_url)."""
@@ -388,7 +469,7 @@ class BadgeCache:
                 response.close()
 
         try:
-            width, height, rgb = decode_scaled(data, self.size, self.background)
+            width, height, rgb, palette = decode_scaled(data, self.size, self.background)
             del data
             # bytearray, not bytes: pngdec takes a writable buffer, and it is
             # read just-in-time at decode, so this has to stay referenced.
@@ -406,9 +487,14 @@ class BadgeCache:
             gc.collect()
 
         self.ready[team_id] = (width, height, blob)
+        self.palettes[team_id] = palette
         if team_id in self.order:
             self.order.remove(team_id)
         self.order.append(team_id)
         self._trim()
-        self.log("Badge ready:", team_id, "{}x{}".format(width, height))
+        self.log("Badge ready:", team_id, "{}x{}".format(width, height), palette)
         return True
+
+    def colours(self, team_id):
+        """The club's colours, most distinctive first. Empty until converted."""
+        return self.palettes.get(team_id, [])

@@ -60,7 +60,7 @@ if not os.path.isdir(badge_dir) or not os.listdir(badge_dir):
 
 for name in sorted(os.listdir(badge_dir)):
     data = open(os.path.join(badge_dir, name), "rb").read()
-    w, h, rgb = fb.decode_scaled(data, BOX, BG)
+    w, h, rgb, _pal = fb.decode_scaled(data, BOX, BG)
 
     ref = Image.open(os.path.join(badge_dir, name)).convert("RGBA")
     scale = min(BOX / ref.width, BOX / ref.height)
@@ -142,7 +142,7 @@ for mode, label in (("RGBA", "colour type 6"), ("RGB", "colour type 2"),
     buf = io.BytesIO()
     make(mode).save(buf, "PNG")
     try:
-        w, h, rgb = fb.decode_scaled(buf.getvalue(), BOX, BG)
+        w, h, rgb, _pal = fb.decode_scaled(buf.getvalue(), BOX, BG)
         check(f"{label} decodes", len(rgb) == w * h * 3)
     except ValueError as e:
         fails.append(f"{label} decode raised: {e}")
@@ -150,27 +150,27 @@ for mode, label in (("RGBA", "colour type 6"), ("RGB", "colour type 2"),
 # palette, with and without transparency
 buf = io.BytesIO()
 make("RGB").convert("P", palette=Image.ADAPTIVE).save(buf, "PNG")
-w, h, rgb = fb.decode_scaled(buf.getvalue(), BOX, BG)
+w, h, rgb, _pal = fb.decode_scaled(buf.getvalue(), BOX, BG)
 check("colour type 3 decodes", len(rgb) == w * h * 3)
 
 buf = io.BytesIO()
 pal = make("RGBA").convert("P", palette=Image.ADAPTIVE)
 pal.save(buf, "PNG", transparency=0)
-w, h, rgb = fb.decode_scaled(buf.getvalue(), BOX, BG)
+w, h, rgb, _pal = fb.decode_scaled(buf.getvalue(), BOX, BG)
 check("colour type 3 + tRNS decodes", len(rgb) == w * h * 3)
 
 # every PNG filter type, forced via Pillow's compression levels
 for level in (0, 1, 6, 9):
     buf = io.BytesIO()
     make("RGBA", (64, 64)).save(buf, "PNG", compress_level=level)
-    w, h, rgb = fb.decode_scaled(buf.getvalue(), BOX, BG)
+    w, h, rgb, _pal = fb.decode_scaled(buf.getvalue(), BOX, BG)
     check(f"filters survive compress_level={level}", len(rgb) == w * h * 3)
 
 # --- a fully transparent image must come out as pure background --------------
 clear = Image.new("RGBA", (50, 50), (255, 0, 0, 0))
 buf = io.BytesIO()
 clear.save(buf, "PNG")
-w, h, rgb = fb.decode_scaled(buf.getvalue(), BOX, BG)
+w, h, rgb, _pal = fb.decode_scaled(buf.getvalue(), BOX, BG)
 check("transparent image is all background", set(zip(rgb[0::3], rgb[1::3], rgb[2::3])) == {BG},
       str(sorted(set(zip(rgb[0::3], rgb[1::3], rgb[2::3])))[:3]))
 
@@ -189,7 +189,7 @@ for bad, why in ((b"not a png at all", "garbage"),
 # 16-bit is supported (one real badge uses it); sub-byte depths are refused.
 buf = io.BytesIO()
 Image.new("I;16", (20, 20)).save(buf, "PNG")
-w, h, rgb = fb.decode_scaled(buf.getvalue(), BOX, BG)
+w, h, rgb, _pal = fb.decode_scaled(buf.getvalue(), BOX, BG)
 check("16-bit greyscale decodes", len(rgb) == w * h * 3)
 
 buf = io.BytesIO()

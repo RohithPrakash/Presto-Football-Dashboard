@@ -53,6 +53,18 @@ is spacing calls out rather than rationing a daily allowance:
 Nothing is fetched while there is no match in progress; the countdown and
 clock are drawn locally.
 
+Ambient LEDs
+------------
+The seven LEDs around the screen follow the football. While a match is on the
+home side's colour lights the left, the away side's the right, and the top
+centre blends them. Afterwards the winner's colour takes the whole ring for
+as long as the result is held - a draw keeps the two-sided split. With no
+football on, the favourite clubs' colours cycle, one every fifteen minutes.
+
+Colours are sampled from the crests as they are decoded, so nothing extra is
+downloaded for them. Every change fades down, swaps, and fades back up.
+Set LEDS_ENABLED = False in secrets.py to leave them alone.
+
 Badges
 ------
 Crest URLs come with the match data and are served from a token-free CDN that
@@ -105,6 +117,16 @@ try:
     from secrets import USE_24_HOUR
 except ImportError:
     USE_24_HOUR = True
+
+try:
+    from secrets import LEDS_ENABLED
+except ImportError:
+    LEDS_ENABLED = True
+
+try:
+    from secrets import LED_BRIGHTNESS
+except ImportError:
+    LED_BRIGHTNESS = 1.0
 
 API_HOST = "https://api.football-data.org/v4"
 
@@ -192,6 +214,36 @@ MARGIN = 16
 BADGE_SIZE = 36
 BADGE_GAP = 12
 
+# --- Ambient LEDs -----------------------------------------------------------
+#
+# Presto has seven LEDs around the edge of the screen. Their order comes from
+# the driver's ambient-light sampling points, which run anticlockwise from the
+# bottom right:
+#
+#     4 --- 3 --- 2        left  = 4, 5, 6      right = 0, 1, 2
+#     |           |        top centre = 3
+#     5           1
+#     |           |
+#     6 --------- 0
+#
+# so a match can be shown with the home side lit on the left and the away side
+# on the right, with the top centre blending the two.
+LED_COUNT = 7
+LED_LEFT = (4, 5, 6)
+LED_RIGHT = (0, 1, 2)
+LED_MIDDLE = 3
+
+# How long each club colour stays up while no football is on.
+LED_IDLE_CYCLE_S = 15 * 60
+
+# A change fades the LEDs down, swaps colour, then fades back up. Each half
+# takes this long.
+LED_FADE_S = 1.2
+
+# How often the fade is stepped. Anything smoother than this is wasted on
+# LEDs behind a diffuser.
+LED_TICK_MS = 80
+
 
 def log(*args):
     if DEBUG:
@@ -214,6 +266,20 @@ tz_offset = int(UTC_OFFSET * 3600)
 
 def now_unix():
     return time.time() + EPOCH_SHIFT
+
+
+# time.time() is whole seconds on MicroPython, too coarse to fade with, so the
+# LEDs run off the millisecond tick counter instead. CPython has no ticks_ms,
+# hence the fallback for the desktop tests.
+try:
+    ticks_ms = time.ticks_ms
+    ticks_diff = time.ticks_diff
+except AttributeError:
+    def ticks_ms():
+        return int(time.monotonic() * 1000)
+
+    def ticks_diff(a, b):
+        return a - b
 
 
 def days_from_civil(y, m, d):
@@ -620,6 +686,140 @@ def featured_fixture():
     if recent:
         return recent[-1], False
     return None, False
+
+
+# --- Ambient LEDs -----------------------------------------------------------
+
+led_colours = [(0, 0, 0)] * LED_COUNT    # what is lit, at full brightness
+led_level = 0.0                          # 0 = dark, 1 = full
+led_fading_out = False
+led_written = None                       # last values sent, to skip no-op writes
+led_last_tick = 0
+led_next_cycle = 0
+led_cycle_index = 0
+
+
+def team_colour(team_id, index=0):
+    """A club's colour, or None until its crest has been converted."""
+    palette = badges.colours(team_id)
+    if not palette:
+        return None
+    return palette[index % len(palette)]
+
+
+def mix(first, second):
+    return ((first[0] + second[0]) // 2,
+            (first[1] + second[1]) // 2,
+            (first[2] + second[2]) // 2)
+
+
+def split_leds(home, away):
+    """Home down the left, away down the right, blended across the top."""
+    if home is None and away is None:
+        return [(0, 0, 0)] * LED_COUNT
+    if home is None:
+        home = away
+    if away is None:
+        away = home
+
+    colours = [(0, 0, 0)] * LED_COUNT
+    for i in LED_LEFT:
+        colours[i] = home
+    for i in LED_RIGHT:
+        colours[i] = away
+    colours[LED_MIDDLE] = mix(home, away)
+    return colours
+
+
+def idle_palette():
+    """Every colour we could cycle through while no football is on."""
+    colours = []
+    for team in FAVOURITE_TEAMS:
+        team_id = state["team_ids"].get(str(team), team if isinstance(team, int) else None)
+        if team_id is None:
+            continue
+        for colour in badges.colours(team_id):
+            if colour not in colours:
+                colours.append(colour)
+    return colours
+
+
+def desired_leds():
+    """The colours the current state calls for, before fading is applied."""
+    featured, is_live = featured_fixture()
+
+    if featured is not None:
+        home = team_colour(featured["home_id"])
+        away = team_colour(featured["away_id"])
+        if is_live:
+            return split_leds(home, away)
+
+        # Finished: the winner's colour all the way round. A draw has no
+        # winner, so it keeps the two-sided split.
+        goals_home, goals_away = featured["gh"], featured["ga"]
+        if goals_home is not None and goals_away is not None and goals_home != goals_away:
+            winner = home if goals_home > goals_away else away
+            if winner is not None:
+                return [winner] * LED_COUNT
+        return split_leds(home, away)
+
+    palette = idle_palette()
+    if not palette:
+        return [(0, 0, 0)] * LED_COUNT
+    return [palette[led_cycle_index % len(palette)]] * LED_COUNT
+
+
+def write_leds():
+    global led_written
+    level = led_level * LED_BRIGHTNESS
+    values = [(int(r * level), int(g * level), int(b * level))
+              for r, g, b in led_colours]
+    if values == led_written:
+        return                           # nothing moved, save the calls
+    for i in range(LED_COUNT):
+        presto.set_led_rgb(i, *values[i])
+    led_written = values
+
+
+def update_leds():
+    """Step the fade. Called often; does nothing between ticks."""
+    global led_level, led_fading_out, led_colours, led_last_tick
+    global led_next_cycle, led_cycle_index
+
+    if not LEDS_ENABLED:
+        return
+
+    now = ticks_ms()
+    elapsed = ticks_diff(now, led_last_tick)
+    if elapsed < LED_TICK_MS:
+        return
+    led_last_tick = now
+    step = min(elapsed, 500) / (LED_FADE_S * 1000.0)
+
+    # Advance the idle cycle when its turn is up. The first tick only starts
+    # the clock, so the cycle opens on the first colour rather than the second.
+    unix_now = now_unix()
+    if led_next_cycle == 0:
+        led_next_cycle = unix_now + LED_IDLE_CYCLE_S
+    elif unix_now >= led_next_cycle:
+        led_next_cycle = unix_now + LED_IDLE_CYCLE_S
+        led_cycle_index += 1
+
+    wanted = desired_leds()
+
+    if led_fading_out:
+        led_level -= step
+        if led_level <= 0.0:
+            led_level = 0.0
+            led_colours = wanted
+            led_fading_out = False
+    elif wanted != led_colours and led_level > 0.0:
+        led_fading_out = True            # phase out before showing the change
+    else:
+        led_colours = wanted
+        led_level = min(1.0, led_level + step)
+
+    write_leds()
 
 
 # --- Call pacing ------------------------------------------------------------
@@ -1063,6 +1263,10 @@ while True:
             draw_screen()
             gc.collect()
 
+        # Stepped far more often than the screen so the fades look smooth;
+        # it rate-limits itself internally.
+        update_leds()
+
     except (ApiError, OSError, ValueError, KeyError) as e:
         # Never let a transient failure stop the clock.
         status_message = str(e)
@@ -1070,4 +1274,6 @@ while True:
         log("Loop error:", e)
         time.sleep(5)
 
-    time.sleep(0.5)
+    # Short enough for the LED fades, and everything else in the loop is a
+    # cheap "is it time yet?" check.
+    time.sleep(0.05)
