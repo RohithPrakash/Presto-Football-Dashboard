@@ -96,8 +96,52 @@ for name, ops in DETAIL:
     check(f"[{name}] back bar drawn last",
           all(o[3] <= preview.fs.DETAIL_TOP + 4 for o in body_after), str(body_after[:2]))
 
+    # Nothing may sit on top of anything else. This is the check that was
+    # missing when "Goalless" landed on the HALF TIME marker.
+    boxes = []
+    for _, t, x, y, size, _pen in texts:
+        boxes.append((t, x, y - size * 0.80, x + text_width(t, size), y + size * 0.22))
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            a_t, a_x0, a_y0, a_x1, a_y1 = boxes[i]
+            b_t, b_x0, b_y0, b_x1, b_y1 = boxes[j]
+            overlap_x = a_x0 < b_x1 and b_x0 < a_x1
+            overlap_y = a_y0 < b_y1 and b_y0 < a_y1
+            check(f"[{name}] '{a_t}' and '{b_t}' do not overlap",
+                  not (overlap_x and overlap_y),
+                  f"'{a_t}' y{a_y0:.0f}-{a_y1:.0f} vs '{b_t}' y{b_y0:.0f}-{b_y1:.0f}")
+
+    # Goal dots must not land on a label either.
+    for _, shape, _pen in shapes:
+        if shape[0] != "circle":
+            continue
+        _, cx, cy, r = shape
+        for t, x0, y0, x1, y1 in boxes:
+            if x0 < cx + r and cx - r < x1 and y0 < cy + r and cy - r < y1:
+                fails.append(f"[{name}] goal dot overlaps '{t}' at {cx},{cy}")
+
+    # A scrollbar iff the content genuinely runs past the bottom.
+    fs = preview.fs
+    bars = [o[1] for o in shapes if o[1][0] == "rect" and o[1][3] == fs.SCROLLBAR_W]
+    height = preview.content_heights[name]
+    if fs.scroll_overflow(height):
+        check(f"[{name}] shows a scrollbar", len(bars) == 2, f"{len(bars)} parts")
+        for _rect, bx, by, bw, bh, _r in bars:
+            check(f"[{name}] scrollbar on screen",
+                  bx + bw <= W and by >= fs.DETAIL_TOP and by + bh <= H,
+                  f"{bx},{by} {bw}x{bh}")
+        track, thumb = bars[0], bars[1]
+        check(f"[{name}] thumb sits inside the track",
+              thumb[2] >= track[2] and thumb[2] + thumb[4] <= track[2] + track[4],
+              f"thumb {thumb[2]}+{thumb[4]} track {track[2]}+{track[4]}")
+        check(f"[{name}] thumb shorter than the track", thumb[4] < track[4],
+              f"{thumb[4]} vs {track[4]}")
+    else:
+        check(f"[{name}] no scrollbar when it fits", not bars, f"{len(bars)} parts")
+
     dots = sum(1 for o in shapes if o[1][0] == "circle")
-    print(f"  {name}: {len(texts)} strings, {dots} goal dots")
+    print(f"  {name}: {len(texts)} strings, {dots} goal dots, "
+          f"{'scrolls' if fs.scroll_overflow(height) else 'fits'}")
 
 # The timeline must show exactly one dot per goal.
 detail_by_name = dict(DETAIL)

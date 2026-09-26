@@ -200,6 +200,23 @@ move(240, 200)
 release()
 check("no scrolling when it all fits", fs.detail_scroll, 0)
 
+# --- scroll_overflow ignores a hair of bottom padding ------------------------
+visible = fs.HEIGHT - fs.DETAIL_TOP
+check("content shorter than the screen", fs.scroll_overflow(visible - 50), 0)
+check("content exactly filling the screen", fs.scroll_overflow(visible), 0)
+check("a few pixels over is just padding",
+      fs.scroll_overflow(visible + fs.SCROLL_SLACK - 1), 0)
+check("past the slack it scrolls",
+      fs.scroll_overflow(visible + fs.SCROLL_SLACK + 20), fs.SCROLL_SLACK + 20)
+
+# and a padding-sized overflow must not let the view twitch
+fs.detail_height = visible + 5
+fs.detail_scroll = 0
+press(240, 400)
+move(240, 200)
+release()
+check("padding-sized overflow does not scroll", fs.detail_scroll, 0)
+
 # --- the detail view times out -----------------------------------------------
 to_dashboard()
 press(200, 130)

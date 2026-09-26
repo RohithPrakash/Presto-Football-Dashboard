@@ -251,6 +251,9 @@ def badges_loading():
     fs.schedule[FAV] = rows
 
 
+content_heights = {}
+
+
 def detail_scene(name, setup):
     """Render a detail view rather than the dashboard."""
     ops.clear()
@@ -262,7 +265,7 @@ def detail_scene(name, setup):
     fs.detail_h2h.clear()
     fs.view = "detail"
     fs.detail_fixture = setup()
-    fs.draw_detail()
+    content_heights[name] = fs.draw_detail()
     fs.view = "dashboard"
     return name, list(ops)
 

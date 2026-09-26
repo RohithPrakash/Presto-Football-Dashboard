@@ -920,8 +920,8 @@ def handle_touch():
             touch_moved = True
         # Drag to scroll, but only where there is more than a screenful.
         if view == "detail" and touch_moved:
-            overflow = detail_height - (HEIGHT - DETAIL_TOP)
-            if overflow > 0:
+            overflow = scroll_overflow(detail_height)
+            if overflow:
                 detail_scroll = min(max(0, detail_scroll + (touch_last_y - y)), overflow)
                 dirty = True
             detail_opened_at = now_unix()
@@ -1378,7 +1378,20 @@ def draw_screen():
 
 DETAIL_TOP = 48                  # below the back bar
 GOAL_DOT = 7
-TIMELINE_GAP = 26
+
+# Row heights down the timeline. Each row centres its own content, so these
+# are what keep labels, dots and notes clear of one another.
+TIMELINE_LABEL_H = 30
+TIMELINE_GOALS_H = 32
+TIMELINE_NOTE_H = 46             # roomier: it sits between two labels
+
+# A scrollbar down the right edge, so it is visible that there is more below.
+SCROLLBAR_W = 4
+SCROLLBAR_MIN_THUMB = 30
+
+# Overflow smaller than this is the last row's padding poking past the edge.
+# Not worth a scrollbar, and not worth letting the view move.
+SCROLL_SLACK = 14
 
 
 def draw_back_bar():
@@ -1400,6 +1413,39 @@ def draw_back_bar():
     vector.set_font_size(17)
     display.set_pen(MUTED)
     draw_right(format_time(hour, minute), WIDTH - MARGIN, 31)
+
+
+def scroll_overflow(content_height):
+    """How far the content can move, ignoring a hair of bottom padding."""
+    overflow = content_height - (HEIGHT - DETAIL_TOP)
+    return overflow if overflow > SCROLL_SLACK else 0
+
+
+def draw_scrollbar(content_height):
+    """A thumb down the right edge showing there is more, and where you are."""
+    overflow = scroll_overflow(content_height)
+    if not overflow:
+        return
+
+    visible = HEIGHT - DETAIL_TOP
+    track_top = DETAIL_TOP + 6
+    track_height = visible - 12
+    x = WIDTH - SCROLLBAR_W - 5
+
+    display.set_pen(PANEL)
+    track = Polygon()
+    track.rectangle(x, track_top, SCROLLBAR_W, track_height, (2, 2, 2, 2))
+    vector.draw(track)
+
+    thumb_height = max(SCROLLBAR_MIN_THUMB,
+                       int(track_height * visible / content_height))
+    travel = track_height - thumb_height
+    offset = int(travel * detail_scroll / overflow) if overflow else 0
+
+    display.set_pen(PANEL_EDGE)
+    thumb = Polygon()
+    thumb.rectangle(x, track_top + offset, SCROLLBAR_W, thumb_height, (2, 2, 2, 2))
+    vector.draw(thumb)
 
 
 def match_state(fixture):
@@ -1512,45 +1558,58 @@ def team_pen(team_id, fallback):
 
 
 def draw_timeline(fixture, y):
-    """The two halves down a centre line, a dot per goal on the scoring side."""
+    """The two halves down a centre line, a dot per goal on the scoring side.
+
+    Laid out as a list of rows with explicit heights, and each row's content
+    centred within its own band. Spacing is the layout's business, not each
+    element's, which is what stops a label landing on top of its neighbour.
+    """
     centre = WIDTH // 2
     first, second = goal_split(fixture)
     state_name = match_state(fixture)
     home_pen = team_pen(fixture["home_id"], HOME)
     away_pen = team_pen(fixture["away_id"], LIVE_RED)
+    scored = first[0] + first[1] + second[0] + second[1]
 
-    def marker(text, at_y, pen=MUTED, size=14):
+    def centred(text, at_y, pen, size):
+        """Text on the line, with the line punched out behind it."""
         vector.set_font_size(size)
-        display.set_pen(BACKGROUND)
         width = vector.measure_text(text)[2]
-        # Punch a gap in the line so the label reads cleanly.
+        display.set_pen(BACKGROUND)
         block = Polygon()
-        block.rectangle(int(centre - width / 2) - 8, at_y - 14, int(width) + 16, 20)
+        block.rectangle(int(centre - width / 2) - 8, at_y - size + 2,
+                        int(width) + 16, size + 6)
         vector.draw(block)
         display.set_pen(pen)
         vector.text(text, int(centre - width / 2), at_y)
 
-    rows = []
-    rows.append(("label", "KICK OFF", MUTED))
-    rows.append(("goals", first, None))
+    # (kind, value, pen, row height)
+    rows = [("label", "KICK OFF", MUTED, TIMELINE_LABEL_H)]
+
+    if scored:
+        rows.append(("goals", first, None, TIMELINE_GOALS_H))
+    else:
+        rows.append(("note", "No goals yet" if state_name == "live" else "Goalless",
+                     MUTED, TIMELINE_NOTE_H))
+
     if state_name == "played" or fixture.get("gh_ht") is not None:
-        half_text = "HALF TIME  {} - {}".format(
+        rows.append(("label", "HALF TIME  {} - {}".format(
             fixture.get("gh_ht") if fixture.get("gh_ht") is not None else 0,
-            fixture.get("ga_ht") if fixture.get("ga_ht") is not None else 0)
-        rows.append(("label", half_text, TEXT))
-        rows.append(("goals", second, None))
+            fixture.get("ga_ht") if fixture.get("ga_ht") is not None else 0),
+            TEXT, TIMELINE_LABEL_H))
+        if scored:
+            rows.append(("goals", second, None, TIMELINE_GOALS_H))
+
     if state_name == "played":
         rows.append(("label", "FULL TIME  {} - {}".format(fixture.get("gh") or 0,
-                                                          fixture.get("ga") or 0), TEXT))
+                                                          fixture.get("ga") or 0),
+                     TEXT, TIMELINE_LABEL_H))
     else:
         elapsed = fixture.get("elapsed")
-        rows.append(("label", "{}'".format(elapsed) if elapsed else "IN PLAY", LIVE_RED))
+        rows.append(("label", "{}'".format(elapsed) if elapsed else "IN PLAY",
+                     LIVE_RED, TIMELINE_LABEL_H))
 
-    # Work out the height first so the line can be drawn behind everything.
-    height = 0
-    for kind, value, _pen in rows:
-        height += TIMELINE_GAP if kind == "label" else max(
-            TIMELINE_GAP, (GOAL_DOT * 2 + 10) if (value[0] or value[1]) else TIMELINE_GAP)
+    height = sum(row[3] for row in rows)
 
     display.set_pen(PANEL_EDGE)
     line = Polygon()
@@ -1558,28 +1617,18 @@ def draw_timeline(fixture, y):
     vector.draw(line)
 
     at = y
-    nothing_yet = True
-    for kind, value, pen in rows:
+    for kind, value, pen, row_height in rows:
+        middle = at + row_height // 2
         if kind == "label":
-            at += TIMELINE_GAP
-            marker(value, at, pen)
+            centred(value, middle + 5, pen, 14)
+        elif kind == "note":
+            centred(value, middle + 5, pen, 15)
         else:
-            step = max(TIMELINE_GAP, (GOAL_DOT * 2 + 10) if (value[0] or value[1]) else TIMELINE_GAP)
-            at += step
             if value[0]:
-                draw_goal_dots(value[0], at - 6, True, home_pen)
-                nothing_yet = False
+                draw_goal_dots(value[0], middle, True, home_pen)
             if value[1]:
-                draw_goal_dots(value[1], at - 6, False, away_pen)
-                nothing_yet = False
-
-    if nothing_yet:
-        vector.set_font_size(15)
-        display.set_pen(MUTED)
-        text = "No goals yet" if state_name == "live" else "Goalless"
-        width = vector.measure_text(text)[2]
-        # Off to one side so it does not sit on the line.
-        vector.text(text, int(centre - width / 2), y + height // 2 + 5)
+                draw_goal_dots(value[1], middle, False, away_pen)
+        at += row_height
 
     return height
 
@@ -1710,6 +1759,7 @@ def draw_detail():
 
     content_height = y + detail_scroll - DETAIL_TOP
 
+    draw_scrollbar(content_height)
     # The bar is drawn last so scrolled content slides underneath it.
     draw_back_bar()
     presto.update()
