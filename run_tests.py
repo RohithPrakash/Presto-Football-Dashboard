@@ -20,6 +20,7 @@ SUITES = [
     ("test_badges", "PNG decoder, checked against Pillow"),
     ("test_layout", "screen geometry for every state"),
     ("test_leds", "ambient LED states and fading"),
+    ("test_touch", "touch handling and match detail"),
 ]
 
 

@@ -22,6 +22,7 @@ uv run tests/test_badges.py
 | `test_badges.py` | The PNG decoder compared against Pillow on real crests, every colour type and bit depth, malformed input, and the encoder round-tripping. |
 | `test_layout.py` | Screen geometry for all five states: nothing off-screen, overflowing, or overlapping. |
 | `test_leds.py` | The LED map against the driver's physical layout, the home/away split, winner-takes-all versus a draw, idle cycling, missing-crest fallback, and the fade state machine. |
+| `test_touch.py` | Tap versus drag, card hit testing, scroll clamping at both ends, the idle timeout, goal splitting across both halves, and head-to-head parsing and perspective. |
 | `preview.py` | Renders each state to `layout.html` and to the SVGs in `docs/`. |
 | `fetch_badges.py` | Downloads the crest corpus into `tests/badges/` (gitignored). |
 

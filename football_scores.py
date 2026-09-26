@@ -482,6 +482,7 @@ def slim_fixture(entry, favourite_id):
     competition = entry.get("competition") or {}
     score = entry.get("score") or {}
     full_time = score.get("fullTime") or {}
+    half_time = score.get("halfTime") or {}
 
     ts = iso_to_unix(entry["utcDate"])
 
@@ -489,6 +490,16 @@ def slim_fixture(entry, favourite_id):
     for team in (home, away):
         if team.get("crest") and team.get("id"):
             state["crests"][team["id"]] = team["crest"]
+
+    # The fixture list already carries everything the single-match endpoint
+    # returns on the free tier, so keeping these here means opening a match's
+    # detail view costs no extra request.
+    referees = entry.get("referees") or []
+    referee = ""
+    for official in referees:
+        if official.get("type") in (None, "REFEREE"):
+            referee = to_ascii(official.get("name") or "")
+            break
 
     return {
         "id": entry["id"],
@@ -503,6 +514,12 @@ def slim_fixture(entry, favourite_id):
         "away_id": away.get("id"),
         "gh": full_time.get("home"),
         "ga": full_time.get("away"),
+        "gh_ht": half_time.get("home"),
+        "ga_ht": half_time.get("away"),
+        "winner": score.get("winner"),
+        "matchday": entry.get("matchday"),
+        "stage": entry.get("stage"),
+        "referee": referee,
         "fav": favourite_id,
         "finished_at": None,
     }
@@ -601,6 +618,21 @@ next_schedule_fetch = 0
 next_live_poll = 0
 status_message = ""
 dirty = True             # set whenever something on screen has changed
+
+# --- Views ------------------------------------------------------------------
+
+view = "dashboard"       # or "detail"
+detail_fixture = None
+detail_scroll = 0
+detail_height = 0        # how tall the current detail content is
+detail_opened_at = 0
+detail_h2h = {}          # match id -> [past meetings], or [] for none, or
+                         # missing entirely while it has not been fetched
+h2h_wanted = None        # match id whose head to head still needs fetching
+
+# Rectangles the dashboard drew, as (x, y, w, h, fixture), so a touch can be
+# matched back to the card under it.
+touch_targets = []
 
 
 def all_known_fixtures():
@@ -820,6 +852,137 @@ def update_leds():
         led_level = min(1.0, led_level + step)
 
     write_leds()
+
+
+# --- Touch ------------------------------------------------------------------
+
+# A press has to move less than this to count as a tap rather than a drag.
+TAP_SLOP = 12
+
+# Leave a detail view on its own after this long with no touching, so the
+# board goes back to being an ambient dashboard.
+DETAIL_TIMEOUT_S = 90
+
+touch_down = False
+touch_start = (0, 0)
+touch_last_y = 0
+touch_moved = False
+
+
+def fixture_at(x, y):
+    for left, top, width, height, fixture in touch_targets:
+        if left <= x <= left + width and top <= y <= top + height:
+            return fixture
+    return None
+
+
+def open_detail(fixture):
+    global view, detail_fixture, detail_scroll, detail_opened_at, dirty
+    global h2h_wanted
+    view = "detail"
+    detail_fixture = fixture
+    detail_scroll = 0
+    detail_opened_at = now_unix()
+    dirty = True
+    if fixture["id"] not in detail_h2h:
+        h2h_wanted = fixture["id"]
+    log("Opened detail for", fixture["home"], "v", fixture["away"])
+
+
+def close_detail():
+    global view, detail_fixture, detail_scroll, dirty, h2h_wanted
+    view = "dashboard"
+    detail_fixture = None
+    detail_scroll = 0
+    h2h_wanted = None
+    dirty = True
+
+
+def handle_touch():
+    """Poll the screen and turn presses into taps and scrolls."""
+    global touch_down, touch_start, touch_last_y, touch_moved
+    global detail_scroll, dirty, detail_opened_at
+
+    presto.touch_poll()
+    x, y, touched = presto.touch_a
+
+    if touched and not touch_down:
+        touch_down = True
+        touch_start = (x, y)
+        touch_last_y = y
+        touch_moved = False
+        if view == "detail":
+            detail_opened_at = now_unix()
+        return
+
+    if touched and touch_down:
+        if abs(y - touch_start[1]) > TAP_SLOP or abs(x - touch_start[0]) > TAP_SLOP:
+            touch_moved = True
+        # Drag to scroll, but only where there is more than a screenful.
+        if view == "detail" and touch_moved:
+            overflow = detail_height - (HEIGHT - DETAIL_TOP)
+            if overflow > 0:
+                detail_scroll = min(max(0, detail_scroll + (touch_last_y - y)), overflow)
+                dirty = True
+            detail_opened_at = now_unix()
+        touch_last_y = y
+        return
+
+    if not touched and touch_down:
+        touch_down = False
+        if touch_moved:
+            return                       # that was a scroll, not a tap
+        if view == "detail":
+            if touch_start[1] <= DETAIL_TOP:
+                close_detail()
+        else:
+            fixture = fixture_at(*touch_start)
+            if fixture is not None:
+                open_detail(fixture)
+
+
+def fetch_h2h(match_id):
+    """Past meetings for a match. One call, only when a detail view asks."""
+    payload = api_get("/matches/{}/head2head".format(match_id), {"limit": 10})
+    meetings = []
+    for entry in payload.get("matches", []):
+        score = entry.get("score") or {}
+        full_time = score.get("fullTime") or {}
+        if full_time.get("home") is None:
+            continue
+        year, month, day, _h, _m, _wd = civil_from_unix(iso_to_unix(entry["utcDate"]))
+        winner = score.get("winner") or ""
+        meetings.append({
+            "when": "{} {} {}".format(day, MONTH_NAMES[month - 1], str(year)[2:]),
+            "home": to_ascii(entry["homeTeam"].get("tla")
+                             or entry["homeTeam"].get("shortName") or "?"),
+            "away": to_ascii(entry["awayTeam"].get("tla")
+                             or entry["awayTeam"].get("shortName") or "?"),
+            "home_id": entry["homeTeam"].get("id"),
+            "gh": full_time.get("home"),
+            "ga": full_time.get("away"),
+            # Normalised so h2h_record does not have to know the API's wording.
+            "winner": "DRAW" if winner == "DRAW" else (
+                "HOME" if winner == "HOME_TEAM" else "AWAY"),
+        })
+    return meetings
+
+
+def poll_h2h():
+    """Fetch the head to head a detail view is waiting on, if any."""
+    global h2h_wanted, dirty
+    if h2h_wanted is None:
+        return
+    if calls_in_last_minute() >= REQUESTS_PER_MINUTE - 1:
+        return                           # leave room for the live polling
+    match_id = h2h_wanted
+    h2h_wanted = None
+    try:
+        detail_h2h[match_id] = fetch_h2h(match_id)
+    except (ApiError, OSError, ValueError, KeyError) as e:
+        log("Head to head failed:", e)
+        detail_h2h[match_id] = []        # show "no meetings" rather than hang
+    dirty = True
 
 
 # --- Call pacing ------------------------------------------------------------
@@ -1075,6 +1238,7 @@ def draw_score_line(team_id, name, goals, y, is_favourite, dim):
 
 def draw_featured(fixture, is_live, y, height):
     rounded_rect(MARGIN, y, WIDTH - 2 * MARGIN, height, 12, PANEL)
+    touch_targets.append((MARGIN, y, WIDTH - 2 * MARGIN, height, fixture))
 
     vector.set_font_size(16)
     display.set_pen(MUTED)
@@ -1117,6 +1281,7 @@ def draw_fixture_row(fixture, y, height, emphasise):
     line_two = y + int(inner * 0.82)
 
     rounded_rect(MARGIN, y, WIDTH - 2 * MARGIN, inner, 10, PANEL)
+    touch_targets.append((MARGIN, y, WIDTH - 2 * MARGIN, inner, fixture))
 
     opponent, at_home = fixture_label(fixture)
     opponent_id = fixture["home_id"] if not at_home else fixture["away_id"]
@@ -1157,6 +1322,7 @@ def draw_empty(y):
 def draw_screen():
     display.set_pen(BACKGROUND)
     display.clear()
+    del touch_targets[:]
 
     draw_header()
 
@@ -1200,6 +1366,354 @@ def draw_screen():
             draw_right(format_duration(rows[0]["ts"] - now), WIDTH - MARGIN, list_top + 4)
 
     presto.update()
+
+
+# --- Detail view ------------------------------------------------------------
+#
+# Touching a card opens the match behind it. The free tier does not carry
+# goal, card or substitution events - only the half time and full time
+# scores - so a played match is drawn as a timeline of the two halves with a
+# marker per goal on the scoring side. Everything else that is available
+# (head to head, the referee, the matchday) fills out the rest.
+
+DETAIL_TOP = 48                  # below the back bar
+GOAL_DOT = 7
+TIMELINE_GAP = 26
+
+
+def draw_back_bar():
+    """The bar along the top of a detail view, with its touch target."""
+    display.set_pen(PANEL)
+    bar = Polygon()
+    bar.rectangle(0, 0, WIDTH, DETAIL_TOP)
+    vector.draw(bar)
+
+    vector.set_font_size(22)
+    display.set_pen(ACCENT)
+    vector.text("<", MARGIN, 32)
+    vector.set_font_size(19)
+    display.set_pen(TEXT)
+    vector.text("Back", MARGIN + 18, 31)
+
+    local_now = now_unix() + tz_offset
+    _, _, _, hour, minute, _ = civil_from_unix(local_now)
+    vector.set_font_size(17)
+    display.set_pen(MUTED)
+    draw_right(format_time(hour, minute), WIDTH - MARGIN, 31)
+
+
+def match_state(fixture):
+    """'upcoming', 'live' or 'played'."""
+    if fixture["status"] in IN_PLAY:
+        return "live"
+    if fixture["status"] in FINISHED:
+        return "played"
+    return "upcoming"
+
+
+def draw_detail_header(fixture, y):
+    """Crests, names, and either the score or the kick off time."""
+    height = 132
+    rounded_rect(MARGIN, y, WIDTH - 2 * MARGIN, height, 12, PANEL)
+
+    state_name = match_state(fixture)
+    home_x, away_x = MARGIN + 14, WIDTH - MARGIN - 14 - BADGE_SIZE
+    draw_badge(fixture["home_id"], fixture["home"], home_x, y + 16)
+    draw_badge(fixture["away_id"], fixture["away"], away_x, y + 16)
+
+    # Score in the middle, or a plain "v" before kick off.
+    if state_name == "upcoming":
+        vector.set_font_size(30)
+        display.set_pen(MUTED)
+        middle = "v"
+    else:
+        vector.set_font_size(40)
+        display.set_pen(TEXT)
+        middle = "{} - {}".format(
+            "-" if fixture["gh"] is None else fixture["gh"],
+            "-" if fixture["ga"] is None else fixture["ga"])
+    width = vector.measure_text(middle)[2]
+    vector.text(middle, int(WIDTH / 2 - width / 2), y + 48)
+
+    # Names under their crest, each kept on its own half.
+    vector.set_font_size(17)
+    display.set_pen(TEXT)
+    room = WIDTH // 2 - MARGIN - 24
+    vector.text(fit_text(fixture["home"], room), MARGIN + 14, y + 78)
+    away_text = fit_text(fixture["away"], room)
+    draw_right(away_text, WIDTH - MARGIN - 14, y + 78)
+
+    # Status line.
+    if state_name == "live":
+        elapsed = fixture.get("elapsed")
+        if fixture["status"] == "PAUSED":
+            label, pen = "HALF TIME", LIVE_RED
+        elif elapsed is not None:
+            label, pen = "{}'".format(elapsed), LIVE_RED
+        else:
+            label, pen = "LIVE", LIVE_RED
+    elif state_name == "played":
+        label, pen = "FULL TIME", MUTED
+    else:
+        date_text, time_text = fixture_when(fixture)
+        label, pen = "{}  {}".format(date_text, time_text), ACCENT
+
+    vector.set_font_size(16)
+    display.set_pen(pen)
+    width = vector.measure_text(label)[2]
+    vector.text(label, int(WIDTH / 2 - width / 2), y + 108)
+
+    return height
+
+
+def goal_split(fixture):
+    """Goals per half for each side, as ((h1, a1), (h2, a2)).
+
+    Only the half time and full time scores are published, so we know how
+    many goals each side scored in each half but not when or by whom.
+    """
+    goals_home = fixture.get("gh") or 0
+    goals_away = fixture.get("ga") or 0
+    half_home = fixture.get("gh_ht")
+    half_away = fixture.get("ga_ht")
+    if half_home is None or half_away is None:
+        # Half time not published: attribute everything to one band.
+        return (goals_home, goals_away), (0, 0)
+    second_home = max(0, goals_home - half_home)
+    second_away = max(0, goals_away - half_away)
+    return (half_home, half_away), (second_home, second_away)
+
+
+def draw_goal_dots(count, y, on_left, colour):
+    """A dot per goal, marching outwards from the centre line."""
+    centre = WIDTH // 2
+    display.set_pen(colour)
+    for i in range(min(count, 6)):
+        offset = 26 + i * (GOAL_DOT * 2 + 8)
+        x = centre - offset if on_left else centre + offset
+        dot = Polygon()
+        dot.circle(x, y, GOAL_DOT)
+        vector.draw(dot)
+    if count > 6:
+        vector.set_font_size(14)
+        display.set_pen(colour)
+        extra = "+{}".format(count - 6)
+        offset = 26 + 6 * (GOAL_DOT * 2 + 8)
+        x = centre - offset if on_left else centre + offset
+        vector.text(extra, int(x - 8), y + 5)
+
+
+def team_pen(team_id, fallback):
+    """A pen in the club's colour, falling back when no crest has arrived."""
+    colour = team_colour(team_id)
+    if colour is None:
+        return fallback
+    return display.create_pen(*colour)
+
+
+def draw_timeline(fixture, y):
+    """The two halves down a centre line, a dot per goal on the scoring side."""
+    centre = WIDTH // 2
+    first, second = goal_split(fixture)
+    state_name = match_state(fixture)
+    home_pen = team_pen(fixture["home_id"], HOME)
+    away_pen = team_pen(fixture["away_id"], LIVE_RED)
+
+    def marker(text, at_y, pen=MUTED, size=14):
+        vector.set_font_size(size)
+        display.set_pen(BACKGROUND)
+        width = vector.measure_text(text)[2]
+        # Punch a gap in the line so the label reads cleanly.
+        block = Polygon()
+        block.rectangle(int(centre - width / 2) - 8, at_y - 14, int(width) + 16, 20)
+        vector.draw(block)
+        display.set_pen(pen)
+        vector.text(text, int(centre - width / 2), at_y)
+
+    rows = []
+    rows.append(("label", "KICK OFF", MUTED))
+    rows.append(("goals", first, None))
+    if state_name == "played" or fixture.get("gh_ht") is not None:
+        half_text = "HALF TIME  {} - {}".format(
+            fixture.get("gh_ht") if fixture.get("gh_ht") is not None else 0,
+            fixture.get("ga_ht") if fixture.get("ga_ht") is not None else 0)
+        rows.append(("label", half_text, TEXT))
+        rows.append(("goals", second, None))
+    if state_name == "played":
+        rows.append(("label", "FULL TIME  {} - {}".format(fixture.get("gh") or 0,
+                                                          fixture.get("ga") or 0), TEXT))
+    else:
+        elapsed = fixture.get("elapsed")
+        rows.append(("label", "{}'".format(elapsed) if elapsed else "IN PLAY", LIVE_RED))
+
+    # Work out the height first so the line can be drawn behind everything.
+    height = 0
+    for kind, value, _pen in rows:
+        height += TIMELINE_GAP if kind == "label" else max(
+            TIMELINE_GAP, (GOAL_DOT * 2 + 10) if (value[0] or value[1]) else TIMELINE_GAP)
+
+    display.set_pen(PANEL_EDGE)
+    line = Polygon()
+    line.rectangle(centre - 1, y, 3, height)
+    vector.draw(line)
+
+    at = y
+    nothing_yet = True
+    for kind, value, pen in rows:
+        if kind == "label":
+            at += TIMELINE_GAP
+            marker(value, at, pen)
+        else:
+            step = max(TIMELINE_GAP, (GOAL_DOT * 2 + 10) if (value[0] or value[1]) else TIMELINE_GAP)
+            at += step
+            if value[0]:
+                draw_goal_dots(value[0], at - 6, True, home_pen)
+                nothing_yet = False
+            if value[1]:
+                draw_goal_dots(value[1], at - 6, False, away_pen)
+                nothing_yet = False
+
+    if nothing_yet:
+        vector.set_font_size(15)
+        display.set_pen(MUTED)
+        text = "No goals yet" if state_name == "live" else "Goalless"
+        width = vector.measure_text(text)[2]
+        # Off to one side so it does not sit on the line.
+        vector.text(text, int(centre - width / 2), y + height // 2 + 5)
+
+    return height
+
+
+def h2h_side(fixture):
+    """Whose point of view the head to head is shown from.
+
+    Your own club, when it is playing - "won 3" is only meaningful if you
+    know who won. Otherwise the home side.
+    """
+    favourite = fixture.get("fav")
+    if favourite in (fixture["home_id"], fixture["away_id"]):
+        return favourite
+    return fixture["home_id"]
+
+
+def h2h_record(fixture, meetings):
+    """Wins, draws and losses from h2h_side's point of view."""
+    side = h2h_side(fixture)
+    won = drawn = lost = 0
+    for meeting in meetings:
+        if meeting["winner"] == "DRAW":
+            drawn += 1
+        elif (meeting["winner"] == "HOME") == (meeting["home_id"] == side):
+            won += 1
+        else:
+            lost += 1
+    return won, drawn, lost
+
+
+def draw_h2h(fixture, y):
+    """Head to head: the record, then the recent meetings."""
+    entry = detail_h2h.get(fixture["id"])
+    start = y
+
+    side = h2h_side(fixture)
+    side_name = fixture["home"] if side == fixture["home_id"] else fixture["away"]
+
+    vector.set_font_size(14)
+    display.set_pen(MUTED)
+    vector.text("HEAD TO HEAD - {}".format(side_name.upper()), MARGIN, y + 12)
+
+    if entry is None:
+        display.set_pen(MUTED)
+        vector.set_font_size(15)
+        vector.text("Loading...", MARGIN, y + 40)
+        return 56
+    if not entry:
+        display.set_pen(MUTED)
+        vector.set_font_size(15)
+        vector.text("No previous meetings", MARGIN, y + 40)
+        return 56
+
+    draw_right("last {}".format(len(entry)), WIDTH - MARGIN, y + 12)
+
+    won, drawn, lost = h2h_record(fixture, entry)
+    y += 28
+    rounded_rect(MARGIN, y, WIDTH - 2 * MARGIN, 58, 10, PANEL)
+    third = (WIDTH - 2 * MARGIN) // 3
+    for index, (value, label, pen) in enumerate(
+            ((won, "won", ACCENT), (drawn, "drawn", MUTED), (lost, "lost", LIVE_RED))):
+        cx = MARGIN + third * index + third // 2
+        vector.set_font_size(26)
+        display.set_pen(pen)
+        width = vector.measure_text(str(value))[2]
+        vector.text(str(value), int(cx - width / 2), y + 30)
+        vector.set_font_size(13)
+        display.set_pen(MUTED)
+        width = vector.measure_text(label)[2]
+        vector.text(label, int(cx - width / 2), y + 48)
+    y += 70
+
+    vector.set_font_size(15)
+    for meeting in entry[:6]:
+        display.set_pen(MUTED)
+        vector.text(meeting["when"], MARGIN, y)
+        display.set_pen(TEXT)
+        line = "{} {}-{} {}".format(meeting["home"], meeting["gh"],
+                                    meeting["ga"], meeting["away"])
+        draw_right(fit_text(line, WIDTH - 2 * MARGIN - 110), WIDTH - MARGIN, y)
+        y += 24
+
+    return y - start
+
+
+def draw_detail_footer(fixture, y):
+    """Competition, matchday and referee - whatever we happen to know."""
+    bits = []
+    if fixture.get("league"):
+        bits.append(fixture["league"])
+    if fixture.get("matchday"):
+        bits.append("Matchday {}".format(fixture["matchday"]))
+    lines = []
+    if bits:
+        lines.append(" - ".join(bits))
+    if fixture.get("referee"):
+        lines.append("Referee: {}".format(fixture["referee"]))
+
+    vector.set_font_size(14)
+    display.set_pen(MUTED)
+    for line in lines:
+        vector.text(fit_text(line, WIDTH - 2 * MARGIN), MARGIN, y + 12)
+        y += 20
+    return len(lines) * 20 + 8
+
+
+def draw_detail():
+    """The whole detail screen, honouring the scroll offset."""
+    fixture = detail_fixture
+    display.set_pen(BACKGROUND)
+    display.clear()
+
+    if fixture is None:
+        draw_back_bar()
+        presto.update()
+        return 0
+
+    y = DETAIL_TOP + 10 - detail_scroll
+    y += draw_detail_header(fixture, y) + 16
+
+    if match_state(fixture) == "upcoming":
+        y += draw_detail_footer(fixture, y) + 6
+        y += draw_h2h(fixture, y) + 8
+    else:
+        y += draw_timeline(fixture, y) + 22
+        y += draw_detail_footer(fixture, y) + 6
+        y += draw_h2h(fixture, y) + 8
+
+    content_height = y + detail_scroll - DETAIL_TOP
+
+    # The bar is drawn last so scrolled content slides underneath it.
+    draw_back_bar()
+    presto.update()
+    return content_height
 
 
 def show_message(text):
@@ -1256,11 +1770,21 @@ while True:
         if badges.process_one():
             dirty = True
 
+        handle_touch()
+        poll_h2h()
+
+        # Drop back to the dashboard if a detail view is left untouched.
+        if view == "detail" and now_unix() - detail_opened_at > DETAIL_TIMEOUT_S:
+            close_detail()
+
         minute = int((now_unix() + tz_offset) // 60)
         if dirty or minute != last_minute:
             last_minute = minute
             dirty = False
-            draw_screen()
+            if view == "detail":
+                detail_height = draw_detail()
+            else:
+                draw_screen()
             gc.collect()
 
         # Stepped far more often than the screen so the fades look smooth;

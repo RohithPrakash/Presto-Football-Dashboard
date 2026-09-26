@@ -16,7 +16,10 @@ def check(name, cond, detail=""):
         fails.append(f"{name}{(': ' + detail) if detail else ''}")
 
 
-for name, ops in preview.scenes:
+DASHBOARD = [(n, o) for n, o in preview.scenes if not n.startswith("Detail")]
+DETAIL = [(n, o) for n, o in preview.scenes if n.startswith("Detail")]
+
+for name, ops in DASHBOARD:
     texts = [o for o in ops if o[0] == "text"]
     shapes = [o for o in ops if o[0] == "shape" and o[1] is not None]
 
@@ -59,6 +62,67 @@ for name, ops in preview.scenes:
     print(f"  {name}: {len(texts)} strings, {len(cards)} cards, "
           f"bottom edge {max((c[2] + c[4]) for c in cards) if cards else 0:.0f}")
 
+# --- detail views ------------------------------------------------------------
+# These scroll, so content may legitimately run past the bottom of the screen;
+# what must hold is that nothing spills sideways and the back control is there.
+for name, ops in DETAIL:
+    texts = [o for o in ops if o[0] == "text"]
+    shapes = [o for o in ops if o[0] == "shape" and o[1] is not None]
+    labels = [o[1] for o in texts]
+
+    check(f"[{name}] has a back control", "Back" in labels, str(labels[:4]))
+    check(f"[{name}] draws content", len(texts) > 6, f"{len(texts)} strings")
+
+    for _, t, x, y, size, _pen in texts:
+        w = text_width(t, size)
+        check(f"[{name}] '{t}' starts on screen", x >= 0, f"x={x}")
+        check(f"[{name}] '{t}' fits horizontally", x + w <= W - 2,
+              f"x={x:.0f} right={x + w:.0f}")
+        check(f"[{name}] '{t}' not above the screen", y >= 0, f"y={y}")
+
+    for _, shape, _pen in shapes:
+        if shape[0] == "circle":
+            _, x, y, r = shape
+            check(f"[{name}] goal dot on screen", 0 <= x - r and x + r <= W,
+                  f"x={x} r={r}")
+        else:
+            _, x, y, w, h, _r = shape
+            check(f"[{name}] panel within the width", x >= 0 and x + w <= W,
+                  f"x={x} w={w}")
+
+    # The back bar has to sit on top of whatever scrolled underneath it.
+    back_index = next(i for i, o in enumerate(ops) if o[0] == "text" and o[1] == "Back")
+    body_after = [o for o in ops[back_index:] if o[0] == "text" and o[1] not in ("<", "Back")]
+    check(f"[{name}] back bar drawn last",
+          all(o[3] <= preview.fs.DETAIL_TOP + 4 for o in body_after), str(body_after[:2]))
+
+    dots = sum(1 for o in shapes if o[1][0] == "circle")
+    print(f"  {name}: {len(texts)} strings, {dots} goal dots")
+
+# The timeline must show exactly one dot per goal.
+detail_by_name = dict(DETAIL)
+played = detail_by_name["Detail: finished match"]
+dots = sum(1 for o in played if o[0] == "shape" and o[1] and o[1][0] == "circle")
+check("finished 5-3 draws eight dots", dots == 8, str(dots))
+
+live = detail_by_name["Detail: live match"]
+dots = sum(1 for o in live if o[0] == "shape" and o[1] and o[1][0] == "circle")
+check("live 2-1 draws three dots", dots == 3, str(dots))
+
+goalless = detail_by_name["Detail: goalless"]
+dots = sum(1 for o in goalless if o[0] == "shape" and o[1] and o[1][0] == "circle")
+check("goalless draws no dots", dots == 0, str(dots))
+check("goalless says so",
+      any(o[0] == "text" and o[1] == "Goalless" for o in goalless))
+check("no meetings says so",
+      any(o[0] == "text" and "No previous meetings" in o[1] for o in goalless))
+
+upcoming_detail = detail_by_name["Detail: upcoming fixture"]
+labels = [o[1] for o in upcoming_detail if o[0] == "text"]
+check("upcoming has no timeline", "KICK OFF" not in labels, str(labels[:6]))
+check("upcoming shows head to head", any(t.startswith("HEAD TO HEAD") for t in labels))
+check("head to head names the club", any("MAN CITY" in t for t in labels))
+
 # The scene-specific expectations.
 by_name = dict(preview.scenes)
 
@@ -96,7 +160,7 @@ check("fit_text result fits", text_width(fitted, 20) <= 150, str(text_width(fitt
 check("fit_text leaves short text alone", preview.fs.fit_text("vs Inter", 150) == "vs Inter")
 
 # --- badges ------------------------------------------------------------------
-for name, ops in preview.scenes:
+for name, ops in DASHBOARD:
     drawn = [o for o in ops if o[0] == "badge"]
     cards = sorted([s[1] for s in ops if s[0] == "shape" and s[1] and s[1][0] == "rect"
                     and s[1][3] > 300], key=lambda s: s[2])

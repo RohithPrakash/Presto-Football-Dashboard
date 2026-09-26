@@ -22,6 +22,8 @@ held. Times are shown in your own timezone.
   score panel with the elapsed minute; half time shows as `HALF TIME`.
 - **Final score held for 24 hours** - after the whistle the result stays put,
   with the next four fixtures listed beneath it.
+- **Touch any card** for the match behind it: head to head, a timeline of the
+  goals, the referee. See below.
 - **Club crests**, downloaded and shrunk on the device.
 - **Ambient LEDs** that follow the football - see below.
 - **Several teams at once** - follow as many as you like; their fixtures are
@@ -111,6 +113,52 @@ competition listings, for example
 Tuning knobs live at the top of `football_scores.py`: `SCHEDULE_REFRESH_S`,
 `MIN_LIVE_INTERVAL_S`, `BADGE_SIZE`, `RESULT_HOLD_S`, `LED_IDLE_CYCLE_S`,
 `LED_FADE_S` and friends.
+
+## Touching a match
+
+Every card on the dashboard is tappable, and opens a detail view for that
+match. `<` Back sits top left; drag to scroll when there is more than a
+screenful; and the board drops back to the dashboard on its own after 90
+seconds untouched.
+
+<p align="center">
+  <img src="docs/detail-upcoming.svg" width="32%" alt="Upcoming fixture detail with kick off time and head to head record">
+  <img src="docs/detail-played.svg" width="32%" alt="Finished match detail with a timeline of goals per half">
+  <img src="docs/detail-live.svg" width="32%" alt="Live match detail showing goals so far">
+</p>
+
+| Match | What you get |
+| --- | --- |
+| Upcoming | Kick off day, date and time, competition and matchday, head to head record, recent meetings |
+| Live | Score, elapsed minute, goals so far on the timeline, referee, head to head |
+| Finished | Final and half time scores, the full timeline, referee, head to head |
+
+**Opening a match costs no API calls.** The fixture list already carries
+everything the single-match endpoint returns on this tier. Only the head to
+head is an extra request, fetched once per match, cached, and deferred if the
+live polling needs the headroom.
+
+### About that timeline
+
+The free tier does not publish goal, card or substitution events - only the
+half time and full time scores. So the timeline shows what the data actually
+supports: the two halves down a centre line, with one dot per goal on the
+scoring side, in that club's colour. From 5-3 with 3-2 at the break we know
+three home and two away goals came in the first half; we do not know the
+minutes, so nothing is drawn as though we did.
+
+That is also why head to head is there. It is the most interesting thing the
+free tier will tell you about a match that has not kicked off, and it works
+for finished matches too. The record is shown from your club's point of view,
+computed from the returned meetings - the API's own `aggregates` block
+reports zero wins and zero losses regardless, so it cannot be trusted.
+
+A goalless match says "Goalless" rather than showing an empty line, and a
+pairing that has never met says so:
+
+<p align="center">
+  <img src="docs/detail-goalless.svg" width="32%" alt="A goalless match, with no previous meetings between the clubs">
+</p>
 
 ## The LEDs
 
@@ -226,6 +274,10 @@ change.
 which grabs the board during the eight second boot pause. If the dashboard
 crashed at startup, the traceback is in `/boot_error.txt` on the board.
 
+**A detail view will not open.** Tapping needs a clean press and release in
+one place; a drag is treated as a scroll. The back control is the whole top
+bar, not just the arrow.
+
 **Badges never appear.** They are fetched one per pass of the main loop and
 take a few seconds each. Initials are drawn until then. If one consistently
 fails it is skipped and the initials stay.
@@ -238,7 +290,7 @@ The logic runs on desktop CPython with the hardware stubbed out:
 uv run run_tests.py
 ```
 
-That fetches the crest corpus on first run and executes all four suites. To
+That fetches the crest corpus on first run and executes all six suites. To
 run one on its own:
 
 ```bash
@@ -246,6 +298,8 @@ uv run tests/test_logic.py         # date maths, pacing, accent folding
 uv run tests/test_api.py           # API client and match lifecycle
 uv run tests/test_badges.py        # PNG decoder, checked against Pillow
 uv run tests/test_layout.py        # screen geometry for every state
+uv run tests/test_leds.py          # ambient LED states and fading
+uv run tests/test_touch.py         # touch handling and match detail
 ```
 
 Linting uses the same rule set as Pimoroni's CI, configured in

@@ -117,6 +117,7 @@ class BadgeCache:
         self.size = size
         self.background = background
         self.dims = {}
+        self._palettes = {}
         self.pending = []
 
     def buffer(self, team_id):
@@ -132,7 +133,14 @@ class BadgeCache:
             self.dims[team_id] = (w, h)
         return self.dims[team_id]
 
-    def colours(self, team_id): return []
+    def colours(self, team_id):
+        if team_id not in _have:
+            return []
+        if team_id not in self._palettes:
+            data = open("%s/%d.png" % (BADGE_DIR, team_id), "rb").read()
+            _w, _h, _rgb, pal = real_badges.decode_scaled(data, self.size, self.background)
+            self._palettes[team_id] = pal
+        return self._palettes[team_id]
     def forget(self, team_id): pass
     def request(self, ids): pass
     def process_one(self): return False
@@ -243,11 +251,84 @@ def badges_loading():
     fs.schedule[FAV] = rows
 
 
+def detail_scene(name, setup):
+    """Render a detail view rather than the dashboard."""
+    ops.clear()
+    fs.schedule.clear()
+    fs.live_fixtures.clear()
+    fs.state["results"] = {}
+    fs.status_message = ""
+    fs.detail_scroll = 0
+    fs.detail_h2h.clear()
+    fs.view = "detail"
+    fs.detail_fixture = setup()
+    fs.draw_detail()
+    fs.view = "dashboard"
+    return name, list(ops)
+
+
+H2H = [
+    {"when": "8 Feb 26", "home": "LIV", "away": "MCI", "home_id": TEAMS["Liverpool"],
+     "gh": 1, "ga": 2, "winner": "AWAY"},
+    {"when": "9 Nov 25", "home": "MCI", "away": "LIV", "home_id": TEAMS["Man City"],
+     "gh": 3, "ga": 0, "winner": "HOME"},
+    {"when": "23 Feb 25", "home": "MCI", "away": "LIV", "home_id": TEAMS["Man City"],
+     "gh": 0, "ga": 2, "winner": "AWAY"},
+    {"when": "1 Dec 24", "home": "LIV", "away": "MCI", "home_id": TEAMS["Liverpool"],
+     "gh": 2, "ga": 0, "winner": "HOME"},
+    {"when": "10 Mar 24", "home": "LIV", "away": "MCI", "home_id": TEAMS["Liverpool"],
+     "gh": 1, "ga": 1, "winner": "DRAW"},
+    {"when": "25 Nov 23", "home": "MCI", "away": "LIV", "home_id": TEAMS["Man City"],
+     "gh": 1, "ga": 1, "winner": "DRAW"},
+]
+
+
+def detail_upcoming():
+    f = fx(600, 19, 21, "Liverpool", "Man City", "Premier League")
+    f["matchday"] = 8
+    fs.detail_h2h[600] = H2H
+    return f
+
+
+def detail_played():
+    f = fx(601, 0, 18, "Man City", "Newcastle", "Premier League",
+           status="FINISHED", gh=5, ga=3)
+    f["gh_ht"], f["ga_ht"] = 3, 2
+    f["matchday"] = 5
+    f["referee"] = "Robert Jones"
+    fs.detail_h2h[601] = H2H[:4]
+    return f
+
+
+def detail_goalless():
+    f = fx(602, 0, 18, "Man City", "Chelsea", "Premier League",
+           status="FINISHED", gh=0, ga=0)
+    f["gh_ht"], f["ga_ht"] = 0, 0
+    f["matchday"] = 6
+    f["referee"] = "Michael Oliver"
+    fs.detail_h2h[602] = []
+    return f
+
+
+def detail_live():
+    f = fx(603, 0, 18, "Man City", "Dortmund", "UEFA Champions League",
+           status="IN_PLAY", gh=2, ga=1, elapsed=67)
+    f["gh_ht"], f["ga_ht"] = 1, 1
+    f["matchday"] = 2
+    f["referee"] = "Clement Turpin"
+    fs.detail_h2h[603] = H2H[:3]
+    return f
+
+
 scenes = [scene("Upcoming only", upcoming_only),
           scene("Live match", live),
           scene("Half time", half_time),
           scene("Finished (held 24h)", finished),
-          scene("Badges still loading", badges_loading)]
+          scene("Badges still loading", badges_loading),
+          detail_scene("Detail: upcoming fixture", detail_upcoming),
+          detail_scene("Detail: finished match", detail_played),
+          detail_scene("Detail: goalless", detail_goalless),
+          detail_scene("Detail: live match", detail_live)]
 
 
 # --- SVG ---------------------------------------------------------------------
